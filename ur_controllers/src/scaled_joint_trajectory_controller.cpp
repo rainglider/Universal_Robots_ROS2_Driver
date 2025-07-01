@@ -53,6 +53,8 @@ controller_interface::CallbackReturn ScaledJointTrajectoryController::on_init()
   if (!scaled_params_.speed_scaling_interface_name.empty()) {
     RCLCPP_INFO(get_node()->get_logger(), "Using scaling state from the hardware from interface %s.",
                 scaled_params_.speed_scaling_interface_name.c_str());
+  } else if (scaled_params_.use_speed_scaling_topic_instead) {
+      RCLCPP_INFO(get_node()->get_logger(), "Using speed scaling topic.");
   } else {
     RCLCPP_INFO(get_node()->get_logger(), "No scaling interface set. This controller will not use speed scaling.");
   }
@@ -65,7 +67,7 @@ controller_interface::InterfaceConfiguration ScaledJointTrajectoryController::st
   controller_interface::InterfaceConfiguration conf;
   conf = JointTrajectoryController::state_interface_configuration();
 
-  if (!scaled_params_.speed_scaling_interface_name.empty()) {
+  if (!scaled_params_.speed_scaling_interface_name.empty() && !scaled_params_.use_speed_scaling_topic_instead) {
     conf.names.push_back(scaled_params_.speed_scaling_interface_name);
   }
 
@@ -75,7 +77,15 @@ controller_interface::InterfaceConfiguration ScaledJointTrajectoryController::st
 controller_interface::CallbackReturn ScaledJointTrajectoryController::on_activate(const rclcpp_lifecycle::State& state)
 {
   // Set scaling interfaces
-  if (!scaled_params_.speed_scaling_interface_name.empty()) {
+  if (scaled_params_.use_speed_scaling_topic_instead) {
+    auto qos = rclcpp::QoS(10);
+    qos.transient_local();
+
+    scaling_factor_sub_ = get_node()->create_subscription<ScalingFactorMsg>(
+        scaled_params_.speed_scaling_topic_name, qos,
+        [&](const ScalingFactorMsg& msg) { scaling_factor_ = msg.data/100.0; }); 
+  }
+  else if (!scaled_params_.speed_scaling_interface_name.empty()) {
     auto it = std::find_if(state_interfaces_.begin(), state_interfaces_.end(), [&](auto& interface) {
       return (interface.get_name() == scaled_params_.speed_scaling_interface_name);
     });
@@ -92,7 +102,7 @@ controller_interface::CallbackReturn ScaledJointTrajectoryController::on_activat
 controller_interface::return_type ScaledJointTrajectoryController::update(const rclcpp::Time& time,
                                                                           const rclcpp::Duration& period)
 {
-  if (scaling_state_interface_.has_value()) {
+  if (!scaled_params_.use_speed_scaling_topic_instead && scaling_state_interface_.has_value()) {
     scaling_factor_ = scaling_state_interface_->get().get_optional().value_or(1.0);
   }
 
@@ -132,6 +142,7 @@ controller_interface::return_type ScaledJointTrajectoryController::update(const 
     joint_trajectory_controller::TrajectoryPointConstIter start_segment_itr, end_segment_itr;
     // if sampling the first time, set the point before you sample
     if (!current_trajectory_->is_sampled_already()) {
+      states_outside_of_tolerance = 0;
       first_sample = true;
       if (params_.interpolate_from_desired_state) {
         if (std::abs(last_commanded_time_.seconds()) < std::numeric_limits<float>::epsilon()) {
@@ -192,12 +203,14 @@ controller_interface::return_type ScaledJointTrajectoryController::update(const 
         if ((before_last_point || first_sample) && !rt_is_holding_ &&
             !check_state_tolerance_per_joint(state_error_, index, active_tol->state_tolerance[index],
                                              true /* show_errors */)) {
-          tolerance_violated_while_moving = true;
+          states_outside_of_tolerance++;
+          if(states_outside_of_tolerance > scaled_params_.allowed_state_tolerance_failures){
+          tolerance_violated_while_moving = true;}
         }
         // past the final point, check that we end up inside goal tolerance
         if (!before_last_point && !rt_is_holding_ &&
             !check_state_tolerance_per_joint(state_error_, index, active_tol->goal_state_tolerance[index],
-                                             false /* show_errors */)) {
+                                             true /* show_errors */)) {
           outside_goal_tolerance = true;
 
           if (active_tol->goal_time_tolerance != 0.0) {
