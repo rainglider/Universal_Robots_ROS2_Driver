@@ -46,11 +46,15 @@
 #include "rclcpp/duration.hpp"
 #include "ur_controllers/scaled_joint_trajectory_controller_parameters.hpp"
 
+#include <std_msgs/msg/float64.hpp>
+
 namespace ur_controllers
 {
 class ScaledJointTrajectoryController : public joint_trajectory_controller::JointTrajectoryController
 {
 public:
+  using ScalingFactorMsg = std_msgs::msg::Float64;
+
   ScaledJointTrajectoryController() = default;
   ~ScaledJointTrajectoryController() override = default;
 
@@ -63,6 +67,7 @@ public:
   CallbackReturn on_init() override;
 
 private:
+
   std::atomic<double> scaling_factor_{ 1.0 };
 
   std::optional<std::reference_wrapper<hardware_interface::LoanedStateInterface>> scaling_state_interface_ =
@@ -70,6 +75,10 @@ private:
 
   std::shared_ptr<scaled_joint_trajectory_controller::ParamListener> scaled_param_listener_;
   scaled_joint_trajectory_controller::Params scaled_params_;
+
+  rclcpp::Subscription<ScalingFactorMsg>::SharedPtr scaling_factor_sub_;
+
+  int states_outside_of_tolerance = 0;
 
   // Private methods copied from Upstream JTC
   void update_pids();
